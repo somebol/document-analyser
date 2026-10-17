@@ -8,8 +8,10 @@ from gliner import GLiNER
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "urchade/gliner_multi-v2.1"
-DEFAULT_LABELS = ("person", "organization", "location")
+DEFAULT_MODEL = "urchade/gliner_large-v2.1"
+DEFAULT_LABELS = ("person name",
+    "organization name",
+    "geographical location",)
 
 
 @dataclass(frozen=True)
