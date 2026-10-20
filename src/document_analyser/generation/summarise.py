@@ -2,6 +2,7 @@ import argparse
 import json
 from pathlib import Path
 
+from document_analyser.config import get_settings
 from document_analyser.generation.answer import (
     SYSTEM_PROMPT,
     GroundedAnswer,
@@ -11,14 +12,19 @@ from document_analyser.generation.ollama_provider import (
 )
 from document_analyser.generation.providers import GenerationProvider
 
-BATCH_CHARACTERS = 10000
-
 
 # Group evidence into bounded batches without dropping any items.
 def create_batches(
     evidence: list[dict],
-    max_characters: int = BATCH_CHARACTERS,
+    max_characters: int | None = None,
 ) -> list[list[dict]]:
+    max_characters = (
+        get_settings().summary_batch_characters
+        if max_characters is None
+        else max_characters
+    )
+    if max_characters <= 0:
+        raise ValueError("Summary batch budget must be positive")
     batches: list[list[dict]] = []
     current: list[dict] = []
     current_size = 0
@@ -27,9 +33,7 @@ def create_batches(
         size = len(json.dumps(item, ensure_ascii=False))
 
         if size > max_characters:
-            raise ValueError(
-                "An evidence item exceeds the summary batch budget."
-            )
+            raise ValueError("An evidence item exceeds the summary batch budget.")
 
         if current and current_size + size > max_characters:
             batches.append(current)
@@ -70,9 +74,7 @@ def summarise_evidence(
     answer = GroundedAnswer.model_validate_json(raw)
 
     allowed_ids = {
-        evidence_id
-        for item in evidence
-        for evidence_id in item["evidence_ids"]
+        evidence_id for item in evidence for evidence_id in item["evidence_ids"]
     }
 
     for finding in answer.findings:
@@ -86,8 +88,19 @@ def summarise_evidence(
 def summarise_document(
     source: Path,
     provider: GenerationProvider,
+    instruction: str = "Provide a concise overview of the document.",
 ) -> dict:
-    chunks = json.loads(source.read_text(encoding="utf-8"))
+    return summarise_chunks(
+        json.loads(source.read_text(encoding="utf-8")), provider, instruction
+    )
+
+
+# Visit every database chunk before consolidating source-linked section summaries.
+def summarise_chunks(
+    chunks: list[dict],
+    provider: GenerationProvider,
+    instruction: str = "Provide a concise overview of the document.",
+) -> dict:
 
     if not isinstance(chunks, list) or not chunks:
         raise ValueError("Expected a nonempty chunk JSON list.")
@@ -117,10 +130,9 @@ def summarise_document(
                 batch,
                 provider,
                 (
-                    "Summarise this document section. Capture its purpose, "
-                    "named parties, important dates, amounts, obligations "
-                    "and qualifications where present. Cite each finding. "
-                    "Do not invent missing details."
+                    f"User request: {instruction}\n"
+                    "Summarise this section as part of that request. Preserve important "
+                    "facts, qualifications and evidence IDs. Do not invent details."
                 ),
             )
         )
@@ -142,46 +154,60 @@ def summarise_document(
                 findings=[],
                 limitations="No supported findings were generated.",
             )
-        elif len(create_batches(intermediate)) > 1:
-            raise ValueError(
-                "Combined summaries exceed the consolidation budget. "
-                "Hierarchical consolidation is required for this document."
-            )
         else:
-            final = summarise_evidence(
-                intermediate,
-                provider,
-                (
-                    "Combine these section findings into a concise document "
-                    "overview. Remove repetition and preserve important facts, "
-                    "qualifications and original evidence IDs. These are "
-                    "intermediate summaries, not original source passages."
-                ),
-            )
+            # Return all section findings if a model fails to compress enough.
+            # This bounds calls and preserves coverage for arbitrarily long documents.
+            for _level in range(get_settings().summary_max_levels):
+                groups = create_batches(intermediate)
+                reduced = [
+                    summarise_evidence(
+                        group,
+                        provider,
+                        f"User request: {instruction}\nConsolidate concisely; preserve evidence IDs.",
+                    )
+                    for group in groups
+                ]
+                if len(groups) == 1:
+                    final = reduced[0]
+                    break
+                next_items = [
+                    {"evidence_ids": f.evidence_ids, "text": f.statement}
+                    for summary in reduced
+                    for f in summary.findings
+                ]
+                if not next_items or len(json.dumps(next_items)) >= len(
+                    json.dumps(intermediate)
+                ):
+                    final = GroundedAnswer(
+                        findings=[f for summary in summaries for f in summary.findings],
+                        limitations="Showing section summaries to preserve document coverage.",
+                    )
+                    break
+                intermediate = next_items
+            else:
+                final = GroundedAnswer(
+                    findings=[f for summary in summaries for f in summary.findings],
+                    limitations="Showing section summaries to preserve document coverage.",
+                )
 
-    limitations = list(dict.fromkeys(
-        text
-        for text in [
-            *(summary.limitations for summary in summaries),
-            final.limitations,
-        ]
-        if text.strip()
-    ))
-
-    final = final.model_copy(
-        update={"limitations": "\n".join(limitations)}
+    limitations = list(
+        dict.fromkeys(
+            text
+            for text in [
+                *(summary.limitations for summary in summaries),
+                final.limitations,
+            ]
+            if text.strip()
+        )
     )
+
+    final = final.model_copy(update={"limitations": "\n".join(limitations)})
 
     return {
         "document_version_id": next(iter(versions)),
         "summary": final.model_dump(),
-        "sources": {
-            str(number): chunk
-            for number, chunk in enumerate(chunks, start=1)
-        },
-        "section_summaries": [
-            summary.model_dump() for summary in summaries
-        ],
+        "sources": {str(number): chunk for number, chunk in enumerate(chunks, start=1)},
+        "section_summaries": [summary.model_dump() for summary in summaries],
     }
 
 
@@ -208,9 +234,7 @@ def main() -> None:
     answer = GroundedAnswer.model_validate(result["summary"])
 
     for finding in answer.findings:
-        citations = " ".join(
-            f"[{number}]" for number in finding.evidence_ids
-        )
+        citations = " ".join(f"[{number}]" for number in finding.evidence_ids)
         print(f"- {finding.statement} {citations}")
 
     if answer.limitations:

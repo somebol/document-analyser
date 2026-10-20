@@ -2,20 +2,22 @@ import math
 
 from ollama import Client
 
-DEFAULT_MODEL = "nomic-embed-text:v1.5"
-DEFAULT_HOST = "http://localhost:11434"
+from document_analyser.config import get_settings
 
 
 class OllamaEmbeddingProvider:
-
-    # Connect to Ollama using the supported Nomic embedding model.
+    # Configure embeddings from shared settings while allowing explicit host overrides.
     def __init__(
         self,
-        host: str = DEFAULT_HOST,
-        timeout: float = 120.0,
+        host: str | None = None,
+        timeout: float | None = None,
     ) -> None:
-        self._model = DEFAULT_MODEL
-        self._client = Client(host=host, timeout=timeout)
+        settings = get_settings()
+        self._model = settings.embedding_model
+        self._client = Client(
+            host=host if host is not None else settings.ollama_host,
+            timeout=timeout if timeout is not None else settings.embedding_timeout,
+        )
 
     # Include the provider, model and prefix strategy in the identity.
     @property
@@ -57,30 +59,17 @@ class OllamaEmbeddingProvider:
             truncate=False,
         )
 
-        vectors = [
-            [float(value) for value in vector]
-            for vector in response.embeddings
-        ]
+        vectors = [[float(value) for value in vector] for vector in response.embeddings]
 
         if len(vectors) != len(texts):
-            raise RuntimeError(
-                "Embedding count does not match input count."
-            )
+            raise RuntimeError("Embedding count does not match input count.")
 
         dimensions = {len(vector) for vector in vectors}
 
         if len(dimensions) != 1 or 0 in dimensions:
-            raise RuntimeError(
-                "Embedding vectors have invalid dimensions."
-            )
+            raise RuntimeError("Embedding vectors have invalid dimensions.")
 
-        if any(
-            not math.isfinite(value)
-            for vector in vectors
-            for value in vector
-        ):
-            raise RuntimeError(
-                "Embedding vectors contain non-finite values."
-            )
+        if any(not math.isfinite(value) for vector in vectors for value in vector):
+            raise RuntimeError("Embedding vectors contain non-finite values.")
 
         return vectors

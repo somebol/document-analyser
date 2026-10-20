@@ -4,6 +4,7 @@ from hashlib import sha256
 
 from qdrant_client import QdrantClient, models
 
+from document_analyser.config import get_settings
 from document_analyser.retrieval.embeddings import EmbeddingProvider
 from document_analyser.retrieval.providers.ollama_embeddings import (
     OllamaEmbeddingProvider,
@@ -28,18 +29,17 @@ def search_passages(
     question: str,
     provider: EmbeddingProvider,
     client: QdrantClient,
-    limit: int = 5,
+    limit: int | None = None,
     document_version_id: str | None = None,
 ) -> list[SearchResult]:
     if not question.strip():
         raise ValueError("The search question must not be blank.")
 
+    limit = get_settings().retrieval_limit if limit is None else limit
     if limit < 1:
         raise ValueError("The result limit must be positive.")
 
-    model_key = sha256(
-        provider.model_id.encode("utf-8")
-    ).hexdigest()[:12]
+    model_key = sha256(provider.model_id.encode("utf-8")).hexdigest()[:12]
 
     collection_name = f"document_chunks_{model_key}"
 
@@ -112,8 +112,8 @@ def main() -> None:
     parser.add_argument(
         "--limit",
         type=int,
-        default=5,
-        help="Maximum number of results (default: 5).",
+        default=None,
+        help="Maximum number of results (default: configured retrieval limit).",
     )
     parser.add_argument(
         "--document-version",
@@ -123,8 +123,8 @@ def main() -> None:
 
     provider = OllamaEmbeddingProvider()
     client = QdrantClient(
-        url="http://localhost:6333",
-        timeout=30,
+        url=get_settings().qdrant_url,
+        timeout=get_settings().qdrant_timeout,
     )
 
     try:

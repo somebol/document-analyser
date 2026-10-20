@@ -3,9 +3,7 @@ from dataclasses import dataclass
 
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
-DEFAULT_TOKENIZER = "microsoft/deberta-v3-large"
-DEFAULT_WINDOW_TOKENS = 192
-DEFAULT_OVERLAP_TOKENS = 32
+from document_analyser.config import get_settings
 
 
 @dataclass(frozen=True)
@@ -16,9 +14,9 @@ class TextWindow:
 
 
 # Load the tokenizer used by our selected GLiNER encoder.
-def load_tokenizer() -> PreTrainedTokenizerBase:
+def load_tokenizer(model_name: str | None = None) -> PreTrainedTokenizerBase:
     tokenizer = AutoTokenizer.from_pretrained(
-        DEFAULT_TOKENIZER,
+        model_name if model_name is not None else get_settings().ner_tokenizer,
         use_fast=True,
     )
 
@@ -33,16 +31,19 @@ def load_tokenizer() -> PreTrainedTokenizerBase:
 def create_windows(
     text: str,
     tokenizer: PreTrainedTokenizerBase,
-    max_tokens: int = DEFAULT_WINDOW_TOKENS,
-    overlap_tokens: int = DEFAULT_OVERLAP_TOKENS,
+    max_tokens: int | None = None,
+    overlap_tokens: int | None = None,
 ) -> list[TextWindow]:
+    settings = get_settings()
+    max_tokens = settings.ner_window_tokens if max_tokens is None else max_tokens
+    overlap_tokens = (
+        settings.ner_overlap_tokens if overlap_tokens is None else overlap_tokens
+    )
     if max_tokens <= 0:
         raise ValueError("max_tokens must be greater than zero.")
 
     if not 0 <= overlap_tokens < max_tokens:
-        raise ValueError(
-            "overlap_tokens must be nonnegative and less than max_tokens."
-        )
+        raise ValueError("overlap_tokens must be nonnegative and less than max_tokens.")
 
     words = list(re.finditer(r"\S+", text))
 
@@ -101,7 +102,7 @@ def create_windows(
             start_index,
             -1,
         ):
-            overlap_text = text[words[candidate_index].start():end]
+            overlap_text = text[words[candidate_index].start() : end]
 
             token_count = len(
                 tokenizer.encode(
@@ -140,13 +141,10 @@ def main() -> None:
     )
 
     for number, window in enumerate(windows, start=1):
-        print(
-            f"\nWindow {number}: "
-            f"characters {window.start}:{window.end}"
-        )
+        print(f"\nWindow {number}: characters {window.start}:{window.end}")
         print(window.text)
 
-        assert text[window.start:window.end] == window.text
+        assert text[window.start : window.end] == window.text
 
 
 if __name__ == "__main__":

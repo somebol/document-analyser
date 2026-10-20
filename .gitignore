@@ -23,3 +23,11 @@ data/
 
 # macOS
 .DS_Store
+# Local model weights and download caches
+models/
+.cache/
+*.safetensors
+*.gguf
+*.onnx
+*.pt
+*.pth

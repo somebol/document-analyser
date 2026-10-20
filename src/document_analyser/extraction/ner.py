@@ -6,12 +6,9 @@ from dataclasses import asdict, dataclass
 
 from gliner import GLiNER
 
-logger = logging.getLogger(__name__)
+from document_analyser.config import get_settings
 
-DEFAULT_MODEL = "urchade/gliner_large-v2.1"
-DEFAULT_LABELS = ("person name",
-    "organization name",
-    "geographical location",)
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -28,16 +25,27 @@ class EntityMention:
 class EntityExtractor:
     """Load a GLiNER model once and reuse it across passages."""
 
-    def __init__(self, model_name: str = DEFAULT_MODEL) -> None:
+    # Load the configured model once and retain the extraction defaults.
+    def __init__(
+        self,
+        model_name: str | None = None,
+        labels: tuple[str, ...] | None = None,
+        threshold: float | None = None,
+    ) -> None:
+        settings = get_settings()
+        model_name = settings.ner_model if model_name is None else model_name
+        self.labels = tuple(settings.ner_labels) if labels is None else labels
+        self.threshold = settings.ner_threshold if threshold is None else threshold
         logger.info("Loading NER model: %s", model_name)
         self.model = GLiNER.from_pretrained(model_name)
         self.model.eval()
 
+    # Preserve explicit labels and threshold overrides, including a zero threshold.
     def extract(
         self,
         text: str,
-        labels: tuple[str, ...] = DEFAULT_LABELS,
-        threshold: float = 0.5,
+        labels: tuple[str, ...] | None = None,
+        threshold: float | None = None,
     ) -> list[EntityMention]:
         """Extract mentions from a short passage."""
         if not text.strip():
@@ -45,8 +53,8 @@ class EntityExtractor:
 
         predictions = self.model.predict_entities(
             text,
-            list(labels),
-            threshold=threshold,
+            list(self.labels if labels is None else labels),
+            threshold=self.threshold if threshold is None else threshold,
         )
 
         return [
@@ -76,11 +84,13 @@ def main() -> None:
     extractor = EntityExtractor()
     mentions = extractor.extract(text)
 
-    print(json.dumps(
-        [asdict(mention) for mention in mentions],
-        indent=2,
-        ensure_ascii=False,
-    ))
+    print(
+        json.dumps(
+            [asdict(mention) for mention in mentions],
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
 
 
 if __name__ == "__main__":

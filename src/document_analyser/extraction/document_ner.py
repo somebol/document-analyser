@@ -34,8 +34,13 @@ def extract_passage_mentions(
     passage: SourcePassage,
     extractor: EntityExtractor,
     tokenizer,
+    *,
+    window_tokens: int | None = None,
+    overlap_tokens: int | None = None,
 ) -> list[SourcedMention]:
-    windows = create_windows(passage.text, tokenizer)
+    windows = create_windows(
+        passage.text, tokenizer, max_tokens=window_tokens, overlap_tokens=overlap_tokens
+    )
 
     unique_mentions: dict[tuple[int, int, str], SourcedMention] = {}
 
@@ -44,9 +49,7 @@ def extract_passage_mentions(
 
         for mention in mentions:
             if not 0 <= mention.start < mention.end <= len(window.text):
-                raise ValueError(
-                    f"Invalid mention offsets in {passage.item_ref}"
-                )
+                raise ValueError(f"Invalid mention offsets in {passage.item_ref}")
 
             start = window.start + mention.start
             end = window.start + mention.end

@@ -4,6 +4,7 @@ import json
 from pydantic import BaseModel, ConfigDict, Field
 from qdrant_client import QdrantClient
 
+from document_analyser.config import get_settings
 from document_analyser.generation.ollama_provider import (
     OllamaGenerationProvider,
 )
@@ -100,7 +101,7 @@ def main() -> None:
         description="Answer a question using indexed document evidence.",
     )
     parser.add_argument("question")
-    parser.add_argument("--limit", type=int, default=5)
+    parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--document-version")
     args = parser.parse_args()
 
@@ -108,8 +109,8 @@ def main() -> None:
     generation_provider = OllamaGenerationProvider()
 
     client = QdrantClient(
-        url="http://localhost:6333",
-        timeout=30,
+        url=get_settings().qdrant_url,
+        timeout=get_settings().qdrant_timeout,
     )
 
     try:
@@ -135,9 +136,7 @@ def main() -> None:
         print("The retrieved evidence does not establish an answer.")
 
     for finding in answer.findings:
-        citations = " ".join(
-            f"[{number}]" for number in finding.evidence_ids
-        )
+        citations = " ".join(f"[{number}]" for number in finding.evidence_ids)
         print(f"- {finding.statement} {citations}")
 
     if answer.limitations:

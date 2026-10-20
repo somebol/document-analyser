@@ -7,14 +7,13 @@ from uuid import NAMESPACE_URL, uuid5
 
 from qdrant_client import QdrantClient, models
 
+from document_analyser.config import get_settings
 from document_analyser.retrieval.embeddings import EmbeddingProvider
 from document_analyser.retrieval.providers.ollama_embeddings import (
     OllamaEmbeddingProvider,
 )
 
 logger = logging.getLogger(__name__)
-
-BATCH_SIZE = 16
 
 
 # Create or validate a collection for this embedding configuration.
@@ -32,17 +31,12 @@ def prepare_collection(
             ),
         )
 
-    config = client.get_collection(
-        collection_name
-    ).config.params.vectors
+    config = client.get_collection(collection_name).config.params.vectors
 
     if not isinstance(config, models.VectorParams):
-        raise ValueError("Expected a single unnamed vector.")
+        raise TypeError("Expected a single unnamed vector.")
 
-    if (
-        config.size != dimensions
-        or config.distance != models.Distance.COSINE
-    ):
+    if config.size != dimensions or config.distance != models.Distance.COSINE:
         raise ValueError("Collection vector configuration differs.")
 
 
@@ -52,7 +46,17 @@ def index_chunks(
     provider: EmbeddingProvider,
     client: QdrantClient,
 ) -> str:
-    chunks = json.loads(source.read_text(encoding="utf-8"))
+    return index_chunk_records(
+        json.loads(source.read_text(encoding="utf-8")), provider, client
+    )
+
+
+# Index database records directly; JSON remains supported by the CLI wrapper.
+def index_chunk_records(
+    chunks: list[dict],
+    provider: EmbeddingProvider,
+    client: QdrantClient,
+) -> str:
 
     if not isinstance(chunks, list) or not chunks:
         raise ValueError("Expected a nonempty JSON list of chunks.")
@@ -80,19 +84,16 @@ def index_chunks(
     if len(set(chunk_ids)) != len(chunk_ids):
         raise ValueError("The input contains duplicate chunk IDs.")
 
-    model_key = sha256(
-        provider.model_id.encode("utf-8")
-    ).hexdigest()[:12]
+    model_key = sha256(provider.model_id.encode("utf-8")).hexdigest()[:12]
 
     collection_name = f"document_chunks_{model_key}"
     dimensions: int | None = None
 
-    for offset in range(0, len(chunks), BATCH_SIZE):
-        batch = chunks[offset:offset + BATCH_SIZE]
+    batch_size = get_settings().embedding_batch_size
+    for offset in range(0, len(chunks), batch_size):
+        batch = chunks[offset : offset + batch_size]
 
-        vectors = provider.embed_documents(
-            [chunk["text"] for chunk in batch]
-        )
+        vectors = provider.embed_documents([chunk["text"] for chunk in batch])
 
         if len(vectors) != len(batch):
             raise ValueError("Embedding count does not match chunk count.")
@@ -163,8 +164,8 @@ def main() -> None:
 
     provider = OllamaEmbeddingProvider()
     client = QdrantClient(
-        url="http://localhost:6333",
-        timeout=60,
+        url=get_settings().qdrant_url,
+        timeout=get_settings().qdrant_timeout,
     )
 
     try:

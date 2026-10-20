@@ -2,17 +2,23 @@ from typing import Any
 
 from ollama import Client
 
+from document_analyser.config import get_settings
+
 
 class OllamaGenerationProvider:
-
-    # Configure the local generative model independently of embeddings.
+    # Configure generation from shared settings while allowing explicit overrides.
     def __init__(
         self,
-        model: str = "qwen3:8b",
-        host: str = "http://localhost:11434",
+        model: str | None = None,
+        host: str | None = None,
     ) -> None:
-        self.model = model
-        self.client = Client(host=host, timeout=300.0)
+        settings = get_settings()
+        self.settings = settings
+        self.model = model if model is not None else settings.generation_model
+        self.client = Client(
+            host=host if host is not None else settings.ollama_host,
+            timeout=settings.generation_timeout,
+        )
 
     # Request schema-constrained JSON from Ollama.
     def generate_json(
@@ -30,9 +36,9 @@ class OllamaGenerationProvider:
             format=schema,
             think=False,
             options={
-                "temperature": 0,
-                "num_ctx": 8192,
-                "num_predict": 1500,
+                "temperature": self.settings.generation_temperature,
+                "num_ctx": self.settings.generation_context_tokens,
+                "num_predict": self.settings.generation_max_tokens,
             },
         )
 

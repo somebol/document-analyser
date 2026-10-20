@@ -3,6 +3,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from qdrant_client import QdrantClient, models
 
+from document_analyser.config import get_settings
 from document_analyser.retrieval.embeddings import EmbeddingProvider
 from document_analyser.retrieval.providers.ollama_embeddings import (
     OllamaEmbeddingProvider,
@@ -26,15 +27,13 @@ def check_vector_search(provider: EmbeddingProvider) -> None:
     if any(len(vector) != dimension for vector in vectors):
         raise ValueError("Document and query dimensions differ.")
 
-    model_key = sha256(
-        provider.model_id.encode("utf-8")
-    ).hexdigest()[:12]
+    model_key = sha256(provider.model_id.encode("utf-8")).hexdigest()[:12]
 
     collection = f"retrieval_demo_{model_key}"
 
     client = QdrantClient(
-        url="http://localhost:6333",
-        timeout=30,
+        url=get_settings().qdrant_url,
+        timeout=get_settings().qdrant_timeout,
     )
 
     try:
@@ -47,17 +46,12 @@ def check_vector_search(provider: EmbeddingProvider) -> None:
                 ),
             )
 
-        config = client.get_collection(
-            collection
-        ).config.params.vectors
+        config = client.get_collection(collection).config.params.vectors
 
         if not isinstance(config, models.VectorParams):
-            raise ValueError("Expected a single unnamed vector.")
+            raise TypeError("Expected a single unnamed vector.")
 
-        if (
-            config.size != dimension
-            or config.distance != models.Distance.COSINE
-        ):
+        if config.size != dimension or config.distance != models.Distance.COSINE:
             raise ValueError("Collection vector configuration differs.")
 
         points = [
@@ -75,9 +69,7 @@ def check_vector_search(provider: EmbeddingProvider) -> None:
                     "dataset": "demo-v1",
                 },
             )
-            for index, (text, vector) in enumerate(
-                zip(passages, vectors, strict=True)
-            )
+            for index, (text, vector) in enumerate(zip(passages, vectors, strict=True))
         ]
 
         client.upsert(
@@ -114,10 +106,7 @@ def check_vector_search(provider: EmbeddingProvider) -> None:
 
         for rank, point in enumerate(result.points, start=1):
             payload = point.payload or {}
-            print(
-                f"{rank}. score={point.score:.4f} "
-                f"{payload.get('text', '')}"
-            )
+            print(f"{rank}. score={point.score:.4f} {payload.get('text', '')}")
     finally:
         client.close()
 
