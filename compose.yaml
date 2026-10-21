@@ -1,25 +1,118 @@
+x-application: &application
+  image: document-analyser:local
+  build: .
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    DATABASE_URL: postgresql+psycopg://analyser:${POSTGRES_PASSWORD:-analyser}@postgres:5432/analyser
+    DOCUMENT_STORAGE_DIR: /data/documents
+    DOCUMENT_API_URL: http://api:8000
+    QDRANT_URL: http://qdrant:6333
+    OLLAMA_HOST: http://host.docker.internal:11434
+    EMBEDDING_MODEL: ${EMBEDDING_MODEL:-nomic-embed-text:v1.5}
+    GENERATION_MODEL: ${GENERATION_MODEL:-qwen3:8b}
+    HF_HOME: /model-cache/huggingface
+    TORCH_HOME: /model-cache/torch
+    XDG_CACHE_HOME: /model-cache
+  volumes:
+    - type: bind
+      source: ${DOCUMENT_STORAGE_DIR:-./data/storage}
+      target: /data/documents
+    - model_cache:/model-cache
+
 services:
   postgres:
     image: postgres:17-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: analyser
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-analyser}
       POSTGRES_DB: analyser
-    ports:
-      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U analyser"]
+      test: ["CMD-SHELL", "pg_isready -U analyser -d analyser"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 20
+
   qdrant:
     image: qdrant/qdrant:v1.17.0
-    ports:
-      - "127.0.0.1:6333:6333"
+    restart: unless-stopped
     volumes:
       - qdrant_data:/qdrant/storage
+    ports:
+      - "127.0.0.1:6333:6333"
+
+  migrate:
+    <<: *application
+    restart: "no"
+    command: ["python", "docker/bootstrap.py"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+
+  api:
+    <<: *application
+    restart: unless-stopped
+    command:
+      - uvicorn
+      - document_analyser.api.app:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+
+  worker:
+    <<: *application
+    restart: unless-stopped
+    command:
+      - python
+      - -m
+      - document_analyser.ingestion.worker
+    stop_grace_period: 60s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  ui:
+    <<: *application
+    restart: unless-stopped
+    command:
+      - streamlit
+      - run
+      - src/document_analyser/ui/app.py
+      - --server.address
+      - 0.0.0.0
+      - --server.port
+      - "8501"
+      - --browser.gatherUsageStats
+      - "false"
+    ports:
+      - "127.0.0.1:8501:8501"
+    depends_on:
+      api:
+        condition: service_healthy
+
 volumes:
   postgres_data:
   qdrant_data:
+  model_cache:
